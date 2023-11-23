@@ -111,7 +111,7 @@ By using data on mothers, fathers, and the infants themselves, we hope to find p
 # construct tidied dataset of birth weight and potential predictors
 birthweight <-
   # pull in csv
-  read_csv("./datasets/birthweight.csv") |>
+  read_csv("birthweight.csv") |>
   # factorize variables where appropriate
   mutate(
     # recode babysex as a binary factor variable
@@ -149,4 +149,15 @@ birthweight <-
   
 
 ```
+
+Note that, the dataset contains no missing values.
+
+```{r}
+# show that all cell entries are non-missing
+all(!is.na(birthweight))
+```
+
+Cleaning is therefore an easy task. Having said that, we narrow down and eliminate some of the predictors that might not be relevant for our analysis in the sections that follow. Regression analysis may not always be appropriate even when all of the data are clean.
+
+
 
