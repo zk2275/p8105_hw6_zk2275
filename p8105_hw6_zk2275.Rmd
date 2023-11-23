@@ -89,14 +89,125 @@ weather_df <-
 
 We consider the SLR as follows:
 
-$$\text{temp}_t^{\text{max}} = \beta_0 + \beta_1 \text{temp}_t^{\text{min}} + \varepsilon_t$$
+$$\text{temp}_t^{\text{max}} = \beta_0 + \beta_1 \text{temp}_t^{\text{min}} + \beta_2 \text{prcp}_t + \varepsilon_t$$
 
 for each day $t$ in 2017. We create 5,000 resampled replicates of our weather data and run the above regression for each one.
 
 ```{r}
+# set a seed for replicability
+set.seed(8105)
+
+# perform the bootstrap with 5000 replicates
+bootstrap_output <-
+  weather_df |>
+  # execute bootstrap
+  modelr::bootstrap(n = 5000) %>% 
+  # for all replicate samples, store regression output via list column
+  mutate(
+      models         = map(strap, ~lm(tmax ~ tmin+prcp, data = .x) )
+    , results_tidy   = map(models, broom::tidy)
+    , results_glance = map(models, broom::glance)
+  ) |> 
+  # remove extraneous columns
+  select(-strap, -models)
+```
+
+
+## Estimating the Coefficient of Determination
+
+First, let’s try to estimate the distribution of the estimator for the coefficient of determination, $R^2$.
+
+```{r}
+
+# unnest result for r2
+r2_estimate <-
+  bootstrap_output %>%
+  # select just the broom::glance output to get r2
+  select(-results_tidy) %>%
+  # unnest result
+  unnest(results_glance) %>%
+  # keep relevant columns
+  select(.id, r.squared)
+
+# create a density plot of the distribution of our estimates
+r2_estimate |>
+  # instantiate plot
+  ggplot(aes(x = r.squared)) +
+  # add density
+  geom_density() +
+  # add meta-data
+  labs(
+    title = "Distribution of Estimates of Coefficient of Determination"
+    , x = ""
+    , y = "Density"
+  )
 
 ```
 
+
+
+The 95% confidence interval around our estimate of $R^2$ is given by [`r round(quantile(pull(r2_estimate, r.squared), 0.05 / 2), 4)`, `r round(quantile(pull(r2_estimate, r.squared), 1 - 0.05 / 2), 4)`]. The distribution has a very slight left skew, but it largely seems to follow a normal distribution with mean `r round(mean(pull(r2_estimate, r.squared)), 4)` and standard deviation of `r round(sd(pull(r2_estimate, r.squared)), 4)`.
+
+## Estimating a Non-linear Function of the Regression Coefficients
+
+Next, let's try to estimate the distribution of the estimator for $S \equiv \log(\beta_1 \times \beta_2)$.
+
+
+```{r distribution_logb1b2}
+# unnest result for coefficients and compute log(b1*b2)
+log_prod_estimate <-
+  bootstrap_output |>
+  # select just the broom::tidy output to get b1 and b2
+  select(-results_glance) |>
+  # unnest result
+  unnest(results_tidy) |>
+  # keep relevant columns
+  select(.id, term, estimate) |>
+  # prepare results for pivot
+  mutate(term = recode(
+      term,
+     "tmin"        = "b1",
+     "prcp"        = "b2"
+  )) |>
+  # pivot wider to enable row-wise computation
+  pivot_wider(
+      names_from  = term
+    , values_from = estimate
+  ) |>
+  # compute estimate as function of b1 and b2
+  mutate(log_prod = log(b1 * b2),
+         abs_log_prod = log(abs(b1 * b2)),
+         b1b2 = b1 * b2)
+```
+
+We notice that $b1 \times b2$ are always negative:
+
+```{r}
+log_prod_estimate|>
+  pull(b1b2) |>
+summary()
+```
+
+So we plot $log(|b1 \times b2|)$ instead.
+
+
+```{r}
+# create a density plot of the distribution of our estimates
+log_prod_estimate |>
+  # instantiate plot
+  ggplot(aes(x = abs_log_prod)) +
+  # add density
+  geom_density() +
+  # add meta-data
+  labs(
+    title = "Distribution of Absolute Estimates of S"
+    , x = ""
+    , y = "Density"
+  )
+```
+
+
+The 95% confidence interval around our estimate of $\log(|\beta_1 \times \beta_2|)$ is given by [`r round(quantile(pull(log_prod_estimate, abs_log_prod), 0.05 / 2), 4)`, `r round(quantile(pull(log_prod_estimate, abs_log_prod), 1 - 0.05 / 2), 4)`]. Once again, the distribution has a very slight left skew, but it largely seems to follow a normal distribution with mean `r round(mean(pull(log_prod_estimate, abs_log_prod)), 4)` and standard deviation of `r round(sd(pull(log_prod_estimate, abs_log_prod)), 4)`.
 
 <!------------------------------------------------------------------------------
 Problem 3
@@ -203,7 +314,7 @@ all(
 )
 ```
 
-As such, including `wtgain`, `delwt`, and `ppwt` simultaneously as predictors would introduce perfect multicollinearity into our model. In particular, if $X$ is our data matrix, $X^t X$ would have no inverse, and hence our projection matrix would be undefined. Fortunately, even if we had not noticed this linear dependence, the `lm` function would have been clever enough to drop one of the three predictors. However, we _have_ noticed this issue, and hence we will omit `wtgain` from our analysis. The choice of which variable to omit is arbitrary, of course, but we prefer to retain the variables that were measured directly.
+As such, including `wtgain`, `delwt`, and `ppwt` simultaneously as predictors would introduce perfect multicollinearity into our model. In particular, if $X$ is our data matrix, $X^tX$ would have no inverse, and hence our projection matrix would be undefined. Fortunately, even if we had not noticed this linear dependence, the `lm` function would have been clever enough to drop one of the three predictors. However, we _have_ noticed this issue, and hence we will omit `wtgain` from our analysis. The choice of which variable to omit is arbitrary, of course, but we prefer to retain the variables that were measured directly.
 
 ### Predictor: Family Income
 
