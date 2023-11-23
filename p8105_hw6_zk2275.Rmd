@@ -146,7 +146,15 @@ birthweight <-
     , `1` = "Present"
     ))
     )
-  
+
+# create parents' races for further analysis
+birthweight <- birthweight |>
+  mutate( prace = factor(
+      ifelse((mrace == "Black" & frace == "Black"), "Black",
+      ifelse((mrace == "White" & frace == "White"), "White", "Other")
+            )
+                        )
+      )
 
 ```
 
@@ -159,5 +167,167 @@ all(!is.na(birthweight))
 
 Cleaning is therefore an easy task. Having said that, we narrow down and eliminate some of the predictors that might not be relevant for our analysis in the sections that follow. Regression analysis may not always be appropriate even when all of the data are clean.
 
+### Predictor: Race of Parents
+
+We have created the variable `prace`, which can indicate one of three things for a given observation: (1) both parents are black, (2) both parents are white, or (3) the parents are any other combination of races. We do this because scenarios (1) and (2) together capture about `r round(100 * mean(pull(birthweight, prace) != "Other"), 0)`% of observations. As such, the variable `prace` is in line with the principle of parsimony, and hence we will employ `prace` in place of `mrace` and `frace`.
+
+### Predictor: Incidence of Prior Problematic Pregnancy
+
+We first observe that the variables `pnumlbw` and `pnumsga` consist solely of zeroes. As they offer no variation, they are not suitable for prediction in this dataset, so we will omit them from our analysis.
+
+```{r}
+# show that pnumlbw is always zero
+all(pull(birthweight, pnumlbw) == 0)
+
+# show that pnumsga is always zero
+all(pull(birthweight, pnumsga) == 0)
+```
+
+### Predictor: Incidence of Malformations
+
+Intuitively, the `malform` variable, which indicates the presence of any malformations that might impact birth weight, seems like an excellent candidate for a predictor of birth weight! Unfortunately, in our dataset, only `r sum(pull(birthweight, malform) == "Present")` observations indicate the presence of such a malformation. While this lack of variation is not as extreme as that of `pnumlbw` or `pnumsga`, we will still opt to omit this candidate predictor from our analysis.
+
+### Predictor: Change in Weight
+
+By construction, we have that `wtgain` $\equiv$ `delwt` - `ppwt`. That is, a mother's weight gain during pregnancy is tautologically the difference between her weight at delivery and her weight prior to pregnancy. We show this is true empirically, as well, just as a sanity check.
+
+```{r}
+# show that wtgain = delwt - ppwt tautologically
+all(
+  birthweight |>
+  # define test variable that returns TRUE if wtgain = delwt - ppwt
+  mutate(wtgain_compare = wtgain == (delwt - ppwt)) |>
+  # pull test variable to be evaluated by the all function
+  pull(wtgain_compare)
+)
+```
+
+As such, including `wtgain`, `delwt`, and `ppwt` simultaneously as predictors would introduce perfect multicollinearity into our model. In particular, if $X$ is our data matrix, $X^t X$ would have no inverse, and hence our projection matrix would be undefined. Fortunately, even if we had not noticed this linear dependence, the `lm` function would have been clever enough to drop one of the three predictors. However, we _have_ noticed this issue, and hence we will omit `wtgain` from our analysis. The choice of which variable to omit is arbitrary, of course, but we prefer to retain the variables that were measured directly.
+
+### Predictor: Family Income
+
+The `fincome` variable is a bit tricky. Should we consider the logarithm of `fincome`? Values denote monthly income in hundreds, rounded. Moreover, values seem to be top-coded at 96, such that any family with a household salary exceeding \$114,600 is grouped into the same category. Because of this arbitrary cap, `fincome` does not seem log-normal, as shown below. (Note: As $\log(0) = -\infty$, we omit the single observation for which `fincome` = 0.)
+
+```{r distribution_fincome}
+# ploot histogram of log(income)
+birthweight |>
+  # omit single row for which fincome = 0
+  filter(fincome > 0) |>
+  # instantiate plot
+  ggplot(aes(x = log(100 * 12 * fincome))) +
+  # add histogram
+  geom_histogram() +
+  # add meta-data
+  labs(
+      title = "Distribution of Annual Family Income (Logged)"
+    , x     = "Log(Income)"
+    , y     = "Frequency"
+  )
+```
+
+Should `fincome` be a factor variable? There are 12 levels of `fincome`, so even if none of the levels truly predict `bwt`, there is a `r round(100 * (1 - (1 - 0.05)^12), 0)`% chance that at least one level would wrongly appear as significant at significance level $\alpha$ = 0.05. As such, it does not seem that factorizing `fincome` is appropriate, either. After all of this deliberation, we conclude it is best to simply leave `fincome` as is - a continuous random variable recorded discretely.
+
+
+## Model Selection
+
+While we have eliminated variables that are obviously bad choices for predictors of birth weight, we will turn to machine learning to eliminate those that are less obviously bad. In particular, we invoke the `glmnet` function to conduct a lasso regression. Below, we use `model.matrix` to convert factor variables to dummy variables, which we can then feed to `glmnet` to obtain the near-optimal choice of $\lambda$, the shrinkage penalty.
+
+```{r optimal_shrinkage_penalty}
+# identify output vector y
+y <- pull(birthweight, bwt)
+
+# set up input matrix x
+x <- birthweight %>% select(
+    # output
+    bwt
+    # baby inputs
+  , babysex, bhead, blength
+    # mom inputs
+  , delwt, gaweeks, menarche, mheight, momage, parity, ppbmi, ppwt, smoken
+    # family inputs
+  , fincome, prace
+  )
+
+# convert factor variables to dummy variables
+x <- model.matrix(~ ., dplyr::select(x, -bwt))[, -1]
+
+# set a seed since results can vary slightly from iteration to iteration
+set.seed(8105)
+
+# conduct lasso for various choices of lambda
+cv_model <- glmnet::cv.glmnet(x, y, alpha = 1)
+plot(cv_model)
+```
+
+Per the algorithm's recommendation, we see that `lambda.1se` (the value of $\lambda$ corresponding to the center vertical dashed line) yields an MSE very close to that of `lambda.min`  (the value of $\lambda$ corresponding to the left vertical dashed line). As such, we can choose a parsimonious model without losing much predictive power. Below are seven variables that survive the second-stage culling.
+
+```{r}
+# create data frame of the selected variables after lasso
+coef(cv_model, s = cv_model[["lambda.1se"]]) %>%
+  # convert to tibble
+  broom::tidy() %>%
+  # remove extraneous column
+  select(row) %>%
+  # remove extraneous row
+  filter(row != "(Intercept)") %>%
+  # output as readable table
+  knitr::kable(col.names = "Selected Variables")
+```
+
+We finally have our model! All that's left is to run the regression and compare our residuals to our fitted values.
+
+```{r}
+# fit final model
+final_model <- lm(
+    # ouput
+    bwt
+    # baby inputs post-lasso
+  ~ bhead + blength
+    # mom inputs post-lasso
+  + delwt + gaweeks + mheight + smoken
+    # family inputs post-lasso
+  + prace
+  , data = birthweight
+)
+
+# output statistics for estimators
+final_model %>%
+  summary() %>%
+  broom::tidy() %>%
+  knitr::kable()
+
+# output statistics for overall model
+final_model %>%
+  summary() %>%
+  broom::glance() %>%
+  knitr::kable()
+```
+
+All of our variables appear as highly significant ($p$ < 0.01), and our adjusted $R^2 \approx$ 71.4%. Given our parsimonious selection of variables, this seems like a good fit! Let's compare our model residuals to our model predictions to validate the results.
+
+```{r residuals_vs_predictions}
+# plot scatter plot of residuals against fitted values
+birthweight %>%
+  # add predicted values
+  add_predictions(final_model) %>%
+  # add residuals
+  add_residuals(final_model) %>%
+  # instantiate plot
+  ggplot(aes(x = pred, y = resid)) +
+  # add points
+  geom_point(alpha = 0.1, color = "blue") +
+  # add smoothed lines
+  geom_smooth(se = FALSE, color = "orange") + 
+  # deepen line y = 0 for reference
+  geom_hline(yintercept = 0, color = "black") + 
+  # add meta-data
+  labs(
+    title = "Residuals against Predicted Values"
+    , x = "Predicted Values"
+    , y = "Residuals"
+  )
+```
+
+There are two observations for which a negative birth weight is predicted, but this is not unreasonable for an unconstrained linear regression. Though the residuals tend to skew positive for fitted values below 1,750, only about `r round(100 * sum((birthweight %>% add_predictions(final_model) %>% pull(pred)) < 1750) / nrow(birthweight), 2)`% of observations lie below this threshold. Otherwise, residuals seem to generally be dispersed evenly about the line $y = 0$. That is, outside the aforementioned outliers, the errors seem to be mean-zero and homoscedastic.
 
 
