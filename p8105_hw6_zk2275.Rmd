@@ -55,3 +55,98 @@ Problem 1
 ------------------------------------------------------------------------------->
 
 # Problem 1
+
+
+
+<!------------------------------------------------------------------------------
+Problem 2
+------------------------------------------------------------------------------->
+
+# Problem 2
+
+We now switch to Central Park weather data. Our goal is to estimate the parameters related to the linear relationship between the maximum and minimum daily temperatures through a bootstrapping procedure.
+
+```{r}
+# pull weather data from rnoaa
+weather_df <-
+  rnoaa::meteo_pull_monitors(
+      c("USW00094728")
+    , var      = c("PRCP", "TMIN", "TMAX")
+    , date_min = "2017-01-01"
+    , date_max = "2017-12-31"
+  ) |>
+  mutate(
+      name = recode(id, USW00094728 = "CentralPark_NY")
+    , tmin = tmin / 10
+    , tmax = tmax / 10
+  ) |>
+  select(name, id, everything())
+
+```
+
+## Bootstrap
+
+We consider the SLR as follows:
+
+$$\text{temp}_t^{\text{max}} = \beta_0 + \beta_1 \text{temp}_t^{\text{min}} + \varepsilon_t$$
+
+for each day $t$ in 2017. We create 5,000 resampled replicates of our weather data and run the above regression for each one.
+
+```{r}
+
+```
+
+
+<!------------------------------------------------------------------------------
+Problem 3
+------------------------------------------------------------------------------->
+
+# Problem 3
+
+## Preliminary Analysis
+
+By using data on mothers, fathers, and the infants themselves, we hope to find potential predictors of infant birth weight. We import our dataset below and factorize variables as needed.
+
+```{r}
+# construct tidied dataset of birth weight and potential predictors
+birthweight <-
+  # pull in csv
+  read_csv("./datasets/birthweight.csv") |>
+  # factorize variables where appropriate
+  mutate(
+    # recode babysex as a binary factor variable
+    babysex = factor(recode(
+      babysex
+    , `1` = "Male"
+    , `2` = "Female"
+    ))
+    # recode mrace as a factor variable
+  , mrace = factor(recode(
+      mrace
+    , `1` = "White"
+    , `2` = "Black"
+    , `3` = "Asian"
+    , `4` = "Puerto Rican"
+    , `8` = "Other"
+    ))
+    # recode frace as a factor variable, noting it has an additional level
+  , frace = factor(recode(
+      frace
+    , `1` = "White"
+    , `2` = "Black"
+    , `3` = "Asian"
+    , `4` = "Puerto Rican"
+    , `8` = "Other"
+    , `9` = "Unknown"
+    ))
+    # recode malform as a binary factor variable
+  , malform = factor(recode(
+      malform
+    , `0` = "Absent"
+    , `1` = "Present"
+    ))
+    )
+  
+
+```
+
