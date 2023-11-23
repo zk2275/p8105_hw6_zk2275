@@ -18,7 +18,8 @@ library(dplyr)
 library(readxl)
 library(rvest)
 library(kableExtra)
-
+library(modelr)
+library(glmnet)
 # set knitr defaults
 knitr::opts_chunk$set(
                echo      = TRUE,
@@ -29,7 +30,7 @@ knitr::opts_chunk$set(
                message   = FALSE,
                warning   = FALSE,
                dpi       = 150,
-               fig.height= 8,
+               fig.height= 6,
                fig.align = "center")
 # set theme defaults
 theme_set(
@@ -255,7 +256,7 @@ x <- model.matrix(~ ., dplyr::select(x, -bwt))[, -1]
 set.seed(8105)
 
 # conduct lasso for various choices of lambda
-cv_model <- glmnet::cv.glmnet(x, y, alpha = 1)
+cv_model <- cv.glmnet(x, y, alpha = 1)
 plot(cv_model)
 ```
 
@@ -263,15 +264,7 @@ Per the algorithm's recommendation, we see that `lambda.1se` (the value of $\lam
 
 ```{r}
 # create data frame of the selected variables after lasso
-coef(cv_model, s = cv_model[["lambda.1se"]]) %>%
-  # convert to tibble
-  broom::tidy() %>%
-  # remove extraneous column
-  select(row) %>%
-  # remove extraneous row
-  filter(row != "(Intercept)") %>%
-  # output as readable table
-  knitr::kable(col.names = "Selected Variables")
+coef(cv_model, s = cv_model[["lambda.1se"]]) 
 ```
 
 We finally have our model! All that's left is to run the regression and compare our residuals to our fitted values.
@@ -330,4 +323,79 @@ birthweight %>%
 
 There are two observations for which a negative birth weight is predicted, but this is not unreasonable for an unconstrained linear regression. Though the residuals tend to skew positive for fitted values below 1,750, only about `r round(100 * sum((birthweight %>% add_predictions(final_model) %>% pull(pred)) < 1750) / nrow(birthweight), 2)`% of observations lie below this threshold. Otherwise, residuals seem to generally be dispersed evenly about the line $y = 0$. That is, outside the aforementioned outliers, the errors seem to be mean-zero and homoscedastic.
 
+
+## Model Comparison
+
+Finally, we compare our model to two other linear model candidates. The first model considers length at birth and gestational age in weeks as inputs. The second model considers head circumference at birth, length at birth, and sex of the child - as well as all possible interactions - as inputs.
+
+```{r model_comparison}
+# create alt model with inputs blength and gaweeks
+model_alt1 <- lm(bwt ~ blength + gaweeks, data = birthweight)
+
+# create alt model with baby variables and all orders of interactions
+model_alt2 <- lm(bwt ~ (bhead + blength + babysex)^3, data = birthweight)
+
+# set seed since crossv_mc randomly assigns rows to the training dataset
+set.seed(8105)
+
+# create 100 training/testing partitions of the data
+cv_split <-
+  # use the default 80/20 split for each partition
+  crossv_mc(birthweight, 100) %>% 
+  # convert lists to tibbles
+  mutate(
+      train = map(train, as_tibble)
+    , test  = map(test,  as_tibble)
+  )
+
+# construct data frame of rmses across models and across training/testing splits
+rmse_df <-
+  cv_split %>%
+  # fit models to training data
+  mutate(
+      final = map(.x = train, ~ final_model)
+    , alt1  = map(.x = train, ~ model_alt1)
+    , alt2  = map(.x = train, ~ model_alt2)
+  ) %>%
+  # apply fitted modls to testing data for validation
+  mutate(
+    rmse_final = map2_dbl(.x = final, .y = test, ~rmse(model = .x, data = .y)),
+    rmse_alt1  = map2_dbl(.x = alt1,  .y = test, ~rmse(model = .x, data = .y)),
+    rmse_alt2  = map2_dbl(.x = alt2,  .y = test, ~rmse(model = .x, data = .y))
+  ) %>%
+  # retain only necessary columns
+  select(rmse_final, rmse_alt1, rmse_alt2) %>%
+  # pivot longer
+  pivot_longer(
+      cols         = everything()
+    , names_to     = "model"
+    , values_to    = "rmse"
+    , names_prefix = "rmse_"
+  ) %>%
+  # factorize models to preserve ordering
+  mutate(model = fct_inorder(model))
+
+# create violin plot of distribution of rmse by model
+rmse_df %>%
+  # instantiate plot
+  ggplot(aes(x = model, y = rmse, fill = model)) +
+  # add violin chart
+  geom_violin(alpha = 0.5) +
+  # suppress legend
+  theme(legend.position = "none") +
+  # add meta-data
+  labs(
+      title = "Distribution of RMSE, by Model"
+    , x     = "Model"
+    , y     = "RMSE"
+  ) +
+  # add x-axis labels
+  scale_x_discrete(labels = c(
+      "My Model"
+    , "Alternate Model I"
+    , "Alternate Model II"
+  ))
+```
+
+Our lasso-inspired model seems to generally perform the best, though the model with interaction terms also seems to do well. Conversely, the distribution of prediction errors for the model with only two inputs lies entirely above that of our model, so we can confidently say that our model is strictly better than this alternative. Moreover, in addition to performing better on average, our model is much easier to interpret than the model with interactions, as the effect of each input in the latter model depends on the other two inputs. 
 
